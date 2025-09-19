@@ -69,7 +69,7 @@ When you start YALAPM, it will:
 ║  APM Trend (last 30s):                                       ║
 ║  ▃▅▇█▆▄▃▅▇██▆▄▂▁▃▄▆▇█▇▅▃▁▂▄▆▇█▇▅▃                            ║
 ╠══════════════════════════════════════════════════════════════╣
-║  [ENTER] start/stop | [r] reset | [s] save | [q] quit        ║
+║  Press Ctrl+C to stop monitoring and see final report        ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
