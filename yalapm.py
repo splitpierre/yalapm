@@ -222,7 +222,7 @@ class RobustAPMMonitor:
                     height = int((apm / max_apm) * 8) if max_apm > 0 else 0
                     chars = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
                     graph_line += chars[height]
-                graph_line += " " * (60 - len(graph_line)) + "║"
+                graph_line += " " * (60 - len(graph_line)) + "   ║"
                 print(graph_line)
             else:
                 print("║  " + "─" * 56 + "    ║")
