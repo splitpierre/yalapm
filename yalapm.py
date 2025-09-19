@@ -31,6 +31,7 @@ except ImportError:
 
 class RobustAPMMonitor:
     def __init__(self):
+        self.monitoring_start = None  # Track when monitoring actually starts
         self.actions = deque(maxlen=3600)
         self.session_start = datetime.now()
         self.is_monitoring = False
@@ -78,17 +79,27 @@ class RobustAPMMonitor:
         return 0
         
     def get_session_time(self):
-        session_duration = datetime.now() - self.session_start
-        hours, remainder = divmod(int(session_duration.total_seconds()), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        if self.monitoring_start is None:
+            return "00:00:00"
+        
+        # Calculate total monitoring time
+        if self.is_monitoring:
+            session_duration = datetime.now() - self.monitoring_start
+            hours, remainder = divmod(int(session_duration.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self._last_session_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            return self._last_session_time
+        else:
+            # When stopped, return the last calculated time (frozen)
+            return getattr(self, '_last_session_time', "00:00:00")
         
     def start_monitoring(self):
         """Start monitoring with error handling"""
         if self.is_monitoring:
-            return
+            return True
             
         try:
+            # Create and start the listeners
             self.mouse_listener = mouse.Listener(on_click=self.on_mouse_click)
             self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press)
             
@@ -99,6 +110,7 @@ class RobustAPMMonitor:
             time.sleep(0.1)
             if self.mouse_listener.running and self.keyboard_listener.running:
                 self.is_monitoring = True
+                self.monitoring_start = datetime.now()
                 self.listener_error = None
                 return True
             else:
@@ -106,10 +118,21 @@ class RobustAPMMonitor:
                 
         except Exception as e:
             self.listener_error = str(e)
-            self.stop_monitoring()
+            self.is_monitoring = False
+            if self.mouse_listener:
+                self.mouse_listener.stop()
+            if self.keyboard_listener:
+                self.keyboard_listener.stop()
             return False
         
     def stop_monitoring(self):
+        if self.is_monitoring and self.monitoring_start:
+            # Save final session time before stopping
+            session_duration = datetime.now() - self.monitoring_start
+            hours, remainder = divmod(int(session_duration.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self._last_session_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
         self.is_monitoring = False
         try:
             if self.mouse_listener:
@@ -143,7 +166,16 @@ class RobustAPMMonitor:
             return False
             
     def display_stats(self):
-        current_apm = self.calculate_current_apm()
+        # current_apm = self.calculate_current_apm()
+        if self.is_monitoring:
+            current_apm = self.calculate_current_apm()
+            if current_apm > self.peak_apm:
+                self.peak_apm = current_apm
+            self.apm_history.append(current_apm)
+        else:
+            # When stopped, show last known APM but don't update it
+            current_apm = self.apm_history[-1] if self.apm_history else 0
+
         avg_apm = self.calculate_average_apm()
         
         if current_apm > self.peak_apm:
@@ -196,7 +228,7 @@ class RobustAPMMonitor:
                 print("║  " + "─" * 56 + "    ║")
                 
         print("╠══════════════════════════════════════════════════════════════╣")
-        print("║  [ENTER] start/stop | [r] reset | [s] save | [q] quit        ║")
+        print("║  Press Ctrl+C to stop monitoring and see final report        ║")
         print("╚══════════════════════════════════════════════════════════════╝")
         
         if self.listener_error:
@@ -206,56 +238,48 @@ class RobustAPMMonitor:
             print("3. Some systems need X11 forwarding or different permissions")
             
     def run_simple_ui(self):
-        """Run with simple input handling that works everywhere"""
-        print("🚀 Linux APM Monitor Starting...")
-        print("📋 This monitors system-wide keyboard and mouse events")
-        print("⚠️  May require sudo or special permissions on some systems")
+        """Auto-start monitoring, quit with Ctrl+C"""
+        print("🚀 YALAPM - Yet Another Linux APM Monitor")
+        print("📊 Auto-starting system-wide monitoring...")
+        print("💡 Press Ctrl+C to stop and see final report")
         print()
         
-        # Start display updates in background
-        def update_display():
+        # Auto-start monitoring
+        success = self.start_monitoring()
+        if not success:
+            print("❌ Failed to start monitoring - permission issue")
+            print("🔧 Try running with: sudo python3 yalapm.py")
+            return
+        
+        print("🟢 Monitoring active! Tracking all keyboard/mouse events...")
+        print()
+        
+        try:
+            # Simple display loop
             while self.running:
                 self.display_stats()
                 time.sleep(1)
                 
-        self.display_thread = threading.Thread(target=update_display, daemon=True)
-        self.display_thread.start()
-        
-        try:
-            while self.running:
-                try:
-                    # Simple input - works on all systems
-                    cmd = input().strip().lower()
-                    
-                    if cmd == '' or cmd == 'enter':
-                        if self.is_monitoring:
-                            self.stop_monitoring()
-                        else:
-                            success = self.start_monitoring()
-                            if not success:
-                                print("❌ Failed to start monitoring - permission issue")
-                    elif cmd == 'r' or cmd == 'reset':
-                        self.reset_stats()
-                    elif cmd == 's' or cmd == 'save':
-                        if self.save_stats():
-                            print("💾 Stats saved!")
-                        else:
-                            print("❌ Save failed")
-                    elif cmd == 'q' or cmd == 'quit':
-                        break
-                    elif cmd == 'help':
-                        print("Commands: [enter]=start/stop, r=reset, s=save, q=quit")
-                    
-                except (EOFError, KeyboardInterrupt):
-                    break
-                    
         except KeyboardInterrupt:
-            pass
+            print("\n\n🛑 Stopping monitor...")
+            self.stop_monitoring()
+            self.print_final_report()
         finally:
             self.running = False
-            self.stop_monitoring()
             self.save_stats()
-            print("\n👋 APM Monitor closed")
+
+    def print_final_report(self):
+        """Print final session summary"""
+        print("\n" + "="*60)
+        print("📋 FINAL SESSION REPORT")
+        print("="*60)
+        print(f"🏆 Peak APM:        {self.peak_apm}")
+        print(f"📊 Average APM:     {self.calculate_average_apm()}")
+        print(f"🎯 Total Actions:   {self.total_actions:,}")
+        print(f"⏱️  Session Time:    {self.get_session_time()}")
+        print(f"💾 Stats saved to:  {self.stats_file}")
+        print("="*60)
+        print("Thanks for using YALAPM! 🚀")
 
 
 def check_permissions():
@@ -279,7 +303,7 @@ def check_permissions():
 
 if __name__ == "__main__":
     print("🔍 Checking system compatibility...")
-    
+
     # Check permissions first
     if not check_permissions():
         print("⚠️  Permission issue detected!")
