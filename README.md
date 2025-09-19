@@ -1,11 +1,7 @@
 # YALAPM - Yet Another Linux APM Monitor
 
-> 🚀 **A robust, terminal-based Actions Per Minute monitor for Linux**  
-> Perfect for tracking your performance during coding sessions and gaming
-
-[![Python](https://img.shields.io/badge/Python-3.6+-blue.svg)](https://python.org)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Linux-orange.svg)](https://linux.org)
+> 🚀 **A terminal-based Actions Per Minute monitor for Linux**  
+> For tracking your performance during coding sessions and gaming
 
 ## 🎯 What is YALAPM?
 
@@ -28,7 +24,7 @@ YALAPM is a lightweight, system-wide APM (Actions Per Minute) monitor designed s
 
 1. **Clone or download YALAPM:**
 ```bash
-wget https://raw.githubusercontent.com/your-repo/yalapm/main/yalapm.py
+wget https://raw.githubusercontent.com/splitpierre/yalapm/refs/heads/main/yalapm.py
 # or save the script as yalapm.py
 ```
 
@@ -61,19 +57,19 @@ When you start YALAPM, it will:
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║                    LINUX APM MONITOR                        ║
+║                    LINUX APM MONITOR                         ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Current APM:        156 🔥                                  ║
 ║  Peak APM:           203 🏆                                  ║
 ║  Average APM:         89 📊                                  ║
 ║  Total Actions:    4,521 🎯                                  ║
 ║  Session Time:    00:15:32 ⏱️                                ║
-║  Status:       MONITORING 🟢                                ║
+║  Status:       MONITORING 🟢                                 ║
 ╠══════════════════════════════════════════════════════════════╣
-║  APM Trend (last 30s):                                      ║
-║  ▃▅▇█▆▄▃▅▇██▆▄▂▁▃▄▆▇█▇▅▃▁▂▄▆▇█▇▅▃                        ║
+║  APM Trend (last 30s):                                       ║
+║  ▃▅▇█▆▄▃▅▇██▆▄▂▁▃▄▆▇█▇▅▃▁▂▄▆▇█▇▅▃                            ║
 ╠══════════════════════════════════════════════════════════════╣
-║  Controls: [ENTER] start/stop | [r] reset | [s] save | [q] quit ║
+║  [ENTER] start/stop | [r] reset | [s] save | [q] quit        ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
@@ -171,30 +167,6 @@ Found a bug? Want to add a feature? Contributions welcome!
 ## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🔮 Future Features
-
-- [ ] Export statistics to CSV/JSON
-- [ ] Multiple session tracking
-- [ ] APM goals and notifications
-- [ ] Hotkey support for quick start/stop
-- [ ] GUI version with graphs
-- [ ] Application-specific APM tracking
-- [ ] Network multiplayer APM comparison
-
-## 🙋‍♂️ FAQ
-
-**Q: Will this work on Wayland?**  
-A: Wayland has stricter security - you might need to use X11 session or run with elevated permissions.
-
-**Q: Does it slow down my system?**  
-A: No, YALAPM uses minimal resources and won't affect gaming or coding performance.
-
-**Q: Can I run it in the background?**  
-A: Currently it's designed for terminal use, but you can minimize the terminal window.
-
-**Q: Is my input data private?**  
-A: Yes! YALAPM only counts actions locally - no data is sent anywhere.
 
 ---
 
