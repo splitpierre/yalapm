@@ -32,6 +32,7 @@ except ImportError:
 class RobustAPMMonitor:
     def __init__(self):
         self.monitoring_start = None  # Track when monitoring actually starts
+        self.virtual_eapm = 0.7  # 70% virtual efficiency
         self.actions = deque(maxlen=3600)
         self.session_start = datetime.now()
         self.is_monitoring = False
@@ -192,6 +193,8 @@ class RobustAPMMonitor:
         print(f"║  Current APM:     {current_apm:>6} {'🔥' if current_apm > 100 else '⚡' if current_apm > 50 else '📈' if current_apm > 0 else '💤'}                                  ║")
         print(f"║  Peak APM:        {self.peak_apm:>6} 🏆                                  ║")
         print(f"║  Average APM:     {avg_apm:>6} 📊                                  ║")
+        virtual_eapm = int(avg_apm * self.virtual_eapm)
+        print(f"║  Average veAPM:   {virtual_eapm:>6} 🎮 (virtual {int(self.virtual_eapm*100)}%)                    ║")
         print(f"║  Total Actions:   {self.total_actions:>6,} 🎯                                  ║")
         print(f"║  Session Time:    {self.get_session_time():>8} ⏱️                                 ║")
         
