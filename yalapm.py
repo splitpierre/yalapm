@@ -1,327 +1,494 @@
 #!/usr/bin/env python3
 """
 YALAPM - Yet Another Linux APM Monitor
+Now with a responsive Textual TUI!
 """
-
 import sys
 import threading
 import time
 import os
 import json
 import subprocess
+import webbrowser
 from collections import deque
 from datetime import datetime, timedelta
+from pathlib import Path
+
+# --- Dependency Management ---
+
+def install_package(package_name):
+    print(f"❌ {package_name} not found. Attempting to install...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        print(f"✅ {package_name} installed successfully.")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to install {package_name} automatically: {e}")
+        print(f"   Please run: pip install {package_name}")
+        return False
 
 try:
     from pynput import mouse, keyboard
 except ImportError:
-    print("❌ pynput not found. Installing...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pynput"])
-        from pynput import mouse, keyboard
-        print("✅ pynput installed successfully")
-    except:
-        print("❌ Failed to install pynput automatically.")
-        print("Please run one of these commands:")
-        print("  pip install pynput")
-        print("  pip3 install pynput")
-        print("  sudo apt install python3-pynput")
-        sys.exit(1)
+    if not install_package("pynput"): sys.exit(1)
+    from pynput import mouse, keyboard
+
+try:
+    from textual.app import App, ComposeResult
+    from textual.widgets import Header, Footer, Static
+    from textual.containers import Container
+    from textual.reactive import reactive
+except ImportError:
+    if not install_package("textual"): sys.exit(1)
+    from textual.app import App, ComposeResult
+    from textual.widgets import Header, Footer, Static
+    from textual.containers import Container
+    from textual.reactive import reactive
 
 
-class RobustAPMMonitor:
+# --- Monitoring Engine ---
+
+class APMMonitorEngine:
+    """Handles the backend logic for monitoring APM."""
     def __init__(self):
-        self.monitoring_start = None  # Track when monitoring actually starts
-        self.virtual_eapm = 0.7  # 70% virtual efficiency
-        self.actions = deque(maxlen=3600)
+        self.monitoring_start = None
+        self.virtual_eapm_factor = 0.7
+        self.actions = deque()
         self.session_start = datetime.now()
         self.is_monitoring = False
         self.total_actions = 0
         self.peak_apm = 0
-        self.apm_history = deque(maxlen=60)
-        
-        # Listeners
+        self.apm_history = deque(maxlen=300) # 5 minutes of history
+
         self.mouse_listener = None
         self.keyboard_listener = None
         self.listener_error = None
-        
-        # Stats file
-        self.stats_file = os.path.expanduser("~/.apm_monitor_stats.json")
-        
-        # Threading for display updates
-        self.running = True
-        self.display_thread = None
-        
-    def on_mouse_click(self, x, y, button, pressed):
-        if pressed and self.is_monitoring:
-            self.record_action()
-            
-    def on_key_press(self, key):
-        if self.is_monitoring:
-            self.record_action()
-            
+
+        # Save reports to Documents folder for better visibility
+        self.reports_dir = Path.home() / "Documents" / "YALAPM_Reports"
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+
+        self.state = "STOPPED"  # Can be STOPPED, RUNNING, PAUSED
+        self.total_active_duration = timedelta(0)
+        self.last_tick_time = None
+
     def record_action(self):
-        now = datetime.now()
-        self.actions.append(now)
+        if self.state != "RUNNING":
+            return # Ignore actions if not running
+        self.actions.append(datetime.now())
         self.total_actions += 1
-        
-    def calculate_current_apm(self):
+
+    def on_mouse_click(self, x, y, button, pressed):
+        if pressed and self.is_monitoring: self.record_action()
+
+    def on_key_press(self, key):
+        if self.is_monitoring: self.record_action()
+
+    def get_stats(self):
+        """Calculate and return a dictionary of current stats."""
         now = datetime.now()
+        
+        if self.state == "RUNNING":
+            if self.last_tick_time:
+                self.total_active_duration += now - self.last_tick_time
+            self.last_tick_time = now
+
         one_minute_ago = now - timedelta(minutes=1)
-        recent_actions = [action for action in self.actions if action > one_minute_ago]
-        return len(recent_actions)
-        
-    def calculate_average_apm(self):
-        if not self.actions:
-            return 0
-        session_duration = (datetime.now() - self.session_start).total_seconds() / 60
-        if session_duration > 0:
-            return int(self.total_actions / session_duration)
-        return 0
-        
-    def get_session_time(self):
-        if self.monitoring_start is None:
-            return "00:00:00"
-        
-        # Calculate total monitoring time
+        while self.actions and self.actions[0] < one_minute_ago:
+            self.actions.popleft()
+        current_apm = len(self.actions)
+
         if self.is_monitoring:
-            session_duration = datetime.now() - self.monitoring_start
-            hours, remainder = divmod(int(session_duration.total_seconds()), 3600)
-            minutes, seconds = divmod(remainder, 60)
-            self._last_session_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            return self._last_session_time
-        else:
-            # When stopped, return the last calculated time (frozen)
-            return getattr(self, '_last_session_time', "00:00:00")
-        
-    def start_monitoring(self):
-        """Start monitoring with error handling"""
-        if self.is_monitoring:
-            return True
-            
-        try:
-            # Create and start the listeners
-            self.mouse_listener = mouse.Listener(on_click=self.on_mouse_click)
-            self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press)
-            
-            self.mouse_listener.start()
-            self.keyboard_listener.start()
-            
-            # Test if listeners are working
-            time.sleep(0.1)
-            if self.mouse_listener.running and self.keyboard_listener.running:
-                self.is_monitoring = True
-                self.monitoring_start = datetime.now()
-                self.listener_error = None
-                return True
-            else:
-                raise Exception("Listeners failed to start")
-                
-        except Exception as e:
-            self.listener_error = str(e)
-            self.is_monitoring = False
-            if self.mouse_listener:
-                self.mouse_listener.stop()
-            if self.keyboard_listener:
-                self.keyboard_listener.stop()
-            return False
-        
-    def stop_monitoring(self):
-        if self.is_monitoring and self.monitoring_start:
-            # Save final session time before stopping
-            session_duration = datetime.now() - self.monitoring_start
-            hours, remainder = divmod(int(session_duration.total_seconds()), 3600)
-            minutes, seconds = divmod(remainder, 60)
-            self._last_session_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        
-        self.is_monitoring = False
-        try:
-            if self.mouse_listener:
-                self.mouse_listener.stop()
-            if self.keyboard_listener:
-                self.keyboard_listener.stop()
-        except:
-            pass
-        
-    def reset_stats(self):
-        self.actions.clear()
-        self.apm_history.clear() 
-        self.total_actions = 0
-        self.peak_apm = 0
-        self.session_start = datetime.now()
-        
-    def save_stats(self):
-        stats = {
-            'total_actions': self.total_actions,
-            'peak_apm': self.peak_apm,
-            'avg_apm': self.calculate_average_apm(),
-            'session_duration': (datetime.now() - self.session_start).total_seconds(),
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        try:
-            with open(self.stats_file, 'w') as f:
-                json.dump(stats, f, indent=2)
-            return True
-        except Exception as e:
-            return False
-            
-    def display_stats(self):
-        # current_apm = self.calculate_current_apm()
-        if self.is_monitoring:
-            current_apm = self.calculate_current_apm()
             if current_apm > self.peak_apm:
                 self.peak_apm = current_apm
             self.apm_history.append(current_apm)
-        else:
-            # When stopped, show last known APM but don't update it
-            current_apm = self.apm_history[-1] if self.apm_history else 0
+        
+        session_duration_min = self.total_active_duration.total_seconds() / 60
+        avg_apm = int(self.total_actions / session_duration_min) if session_duration_min > 0 else 0
+        
+        hours, rem = divmod(int(self.total_active_duration.total_seconds()), 3600)
+        mins, secs = divmod(rem, 60)
+        session_time = f"{hours:02d}:{mins:02d}:{secs:02d}"
 
-        avg_apm = self.calculate_average_apm()
-        
-        if current_apm > self.peak_apm:
-            self.peak_apm = current_apm
-            
-        self.apm_history.append(current_apm)
-        
-        # Clear screen
-        os.system('clear' if os.name == 'posix' else 'cls')
-        
-        print("╔══════════════════════════════════════════════════════════════╗")
-        print("║                    LINUX APM MONITOR                         ║") 
-        print("╠══════════════════════════════════════════════════════════════╣")
-        print(f"║  Current APM:     {current_apm:>6} {'🔥' if current_apm > 100 else '⚡' if current_apm > 50 else '📈' if current_apm > 0 else '💤'}                                  ║")
-        print(f"║  Peak APM:        {self.peak_apm:>6} 🏆                                  ║")
-        print(f"║  Average APM:     {avg_apm:>6} 📊                                  ║")
-        virtual_eapm = int(avg_apm * self.virtual_eapm)
-        print(f"║  Average veAPM:   {virtual_eapm:>6} 🎮 (virtual {int(self.virtual_eapm*100)}%)                    ║")
-        print(f"║  Total Actions:   {self.total_actions:>6,} 🎯                                  ║")
-        print(f"║  Session Time:    {self.get_session_time():>8} ⏱️                                 ║")
-        
-        # Status with error info
-        if self.is_monitoring:
-            status = "MONITORING 🟢"
-        elif self.listener_error:
-            status = "PERMISSION ERROR 🔴"
-        else:
-            status = "STOPPED 🔴"
-        print(f"║  Status:          {status:>15}                           ║")
-        
-        if self.listener_error:
-            print("╠══════════════════════════════════════════════════════════════╣")
-            print("║  ⚠️  PERMISSION ISSUE DETECTED                              ║")
-            print("║  Try running with sudo, or check accessibility settings     ║")
-        
-        print("╠══════════════════════════════════════════════════════════════╣")
-        
-        # Simple ASCII graph
-        if len(self.apm_history) > 0:
-            print("║  APM Trend (last 30s):                                       ║")
-            recent = list(self.apm_history)[-30:]
-            if recent and max(recent) > 0:
-                max_apm = max(recent)
-                graph_line = "║  "
-                for apm in recent:
-                    height = int((apm / max_apm) * 8) if max_apm > 0 else 0
-                    chars = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
-                    graph_line += chars[height]
-                graph_line += " " * (60 - len(graph_line)) + "   ║"
-                print(graph_line)
-            else:
-                print("║  " + "─" * 56 + "    ║")
-                
-        print("╠══════════════════════════════════════════════════════════════╣")
-        print("║  Press Ctrl+C to stop monitoring and see final report        ║")
-        print("╚══════════════════════════════════════════════════════════════╝")
-        
-        if self.listener_error:
-            print("\n🔧 TROUBLESHOOTING:")
-            print("1. Try running with: sudo python3 apm_monitor.py")
-            print("2. Ubuntu: Install 'python3-pynput' package")
-            print("3. Some systems need X11 forwarding or different permissions")
-            
-    def run_simple_ui(self):
-        """Auto-start monitoring, quit with Ctrl+C"""
-        print("🚀 YALAPM - Yet Another Linux APM Monitor")
-        print("📊 Auto-starting system-wide monitoring...")
-        print("💡 Press Ctrl+C to stop and see final report")
-        print()
-        
-        # Auto-start monitoring
-        success = self.start_monitoring()
-        if not success:
-            print("❌ Failed to start monitoring - permission issue")
-            print("🔧 Try running with: sudo python3 yalapm.py")
+        # session_time = "00:00:00"
+        if self.monitoring_start:
+            duration = now - self.monitoring_start
+            hours, rem = divmod(int(duration.total_seconds()), 3600)
+            mins, secs = divmod(rem, 60)
+            session_time = f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+        return {
+            "current_apm": current_apm,
+            "peak_apm": self.peak_apm,
+            "average_apm": avg_apm,
+            "average_veapm": int(avg_apm * self.virtual_eapm_factor),
+            "total_actions": self.total_actions,
+            "session_time": session_time,
+            "status": f"{self.state} {'🟢' if self.state == 'RUNNING' else '🟡' if self.state == 'PAUSED' else '🔴'}",
+            "apm_history": list(self.apm_history)
+        }
+
+    def start(self):
+        """Start the input listeners."""
+        if self.state != "STOPPED":
             return
-        
-        print("🟢 Monitoring active! Tracking all keyboard/mouse events...")
-        print()
-        
         try:
-            # Simple display loop
-            while self.running:
-                self.display_stats()
-                time.sleep(1)
-                
-        except KeyboardInterrupt:
-            print("\n\n🛑 Stopping monitor...")
-            self.stop_monitoring()
-            self.print_final_report()
-        finally:
-            self.running = False
-            self.save_stats()
+            self.mouse_listener = mouse.Listener(on_click=self.on_mouse_click)
+            self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press)
+            self.mouse_listener.start()
+            self.keyboard_listener.start()
 
-    def print_final_report(self):
-        """Print final session summary"""
-        print("\n" + "="*60)
-        print("📋 FINAL SESSION REPORT")
-        print("="*60)
-        print(f"🏆 Peak APM:        {self.peak_apm}")
-        print(f"📊 Average APM:     {self.calculate_average_apm()}")
-        print(f"🎯 Total Actions:   {self.total_actions:,}")
-        print(f"⏱️  Session Time:    {self.get_session_time()}")
-        print(f"💾 Stats saved to:  {self.stats_file}")
-        print("="*60)
-        print("Thanks for using YALAPM! 🚀")
+            self.state = "RUNNING"
+            self.last_tick_time = datetime.now()
+            
+            self.is_monitoring = True
+            self.monitoring_start = datetime.now()
+            self.session_start = datetime.now()
+            self.listener_error = None
+            return True
+        except Exception as e:
+            self.listener_error = str(e)
+            self.is_monitoring = False
+            return False
+    def pause(self):
+        """Pauses the current session."""
+        if self.state == "RUNNING":
+            self.state = "PAUSED"
+            # Invalidate last_tick_time to stop duration accumulation
+            self.last_tick_time = None
+    def resume(self):
+        """Resumes a paused session."""
+        if self.state == "PAUSED":
+            self.state = "RUNNING"
+            self.last_tick_time = datetime.now()
+    def reset(self):
+        """Resets all stats for a new session."""
+        if self.state != "STOPPED":
+            self.stop() # Save the previous session first
+        
+        # Clear all metrics
+        self.actions.clear()
+        self.apm_history.clear()
+        self.total_actions = 0
+        self.peak_apm = 0
+        self.session_start = datetime.now()
+        self.total_active_duration = timedelta(0)
+        self.last_tick_time = None
+        self.state = "STOPPED"
 
+    def stop(self):
+        """Stops the listeners and saves the session if active."""
+        if self.state == "STOPPED":
+            return None # Nothing to save
+            
+        self.state = "STOPPED"
+        self.last_tick_time = None
+        if self.mouse_listener: self.mouse_listener.stop()
+        if self.keyboard_listener: self.keyboard_listener.stop()
+        return self.save_session()
+    
+    def open_report_folder(self):
+        """Opens the report directory in the system's file explorer."""
+        if sys.platform == "win32":
+            os.startfile(self.reports_dir)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", self.reports_dir])
+        else:
+            subprocess.run(["xdg-open", self.reports_dir])
+
+    def get_report_path(self):
+        return self.reports_dir / "index.html"
+
+    def save_session(self):
+        """Save the final session stats to a JSON file and update HTML."""
+        stats = self.get_stats()
+        final_stats = {
+            'total_actions': stats['total_actions'],
+            'peak_apm': stats['peak_apm'],
+            'average_apm': stats['average_apm'],
+            'average_veapm': stats['average_veapm'],
+            'session_duration_seconds': (datetime.now() - self.session_start).total_seconds(),
+            'report_datetime': datetime.now().isoformat()
+        }
+        
+        filename = f"report_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
+        filepath = self.reports_dir / filename
+        with open(filepath, 'w') as f:
+            json.dump(final_stats, f, indent=2)
+            
+        return self.generate_html_report()
+
+    def generate_html_report(self):
+        """Generate an index.html file with a list of reports and a chart."""
+        report_files = sorted(self.reports_dir.glob('*.json'))
+        
+        all_data = []
+        for file in report_files:
+            with open(file, 'r') as f:
+                all_data.append(json.load(f))
+
+        html_path = self.reports_dir / "index.html"
+        html_content = f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8"><title>YALAPM Reports</title>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 2em; background-color: #f4f4f9; color: #333; }}
+                h1, h2 {{ color: #444; }}
+                .container {{ display: flex; flex-wrap: wrap; gap: 2em; }}
+                .reports-list {{ flex: 1; min-width: 300px; }}
+                .chart-container {{ flex: 2; min-width: 400px; background: white; padding: 1em; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
+                ul {{ list-style-type: none; padding: 0; }} li {{ margin-bottom: 0.5em; }}
+                a {{ text-decoration: none; color: #007bff; }} a:hover {{ text-decoration: underline; }}
+            </style>
+        </head>
+        <body>
+            <h1>YALAPM Session Reports Dashboard</h1>
+            <div class="container">
+                <div class="reports-list">
+                    <h2>Saved Sessions</h2>
+                    <ul>{''.join(f'<li><a href="{f.name}">{f.name}</a></li>' for f in report_files)}</ul>
+                </div>
+                <div class="chart-container">
+                    <h2>Historical APM Performance</h2>
+                    <canvas id="apmChart"></canvas>
+                </div>
+            </div>
+            <script>
+                const reportsData = {json.dumps(all_data)};
+                const labels = reportsData.map(r => new Date(r.report_datetime).toLocaleString());
+                new Chart(document.getElementById('apmChart').getContext('2d'), {{
+                    type: 'line',
+                    data: {{
+                        labels: labels,
+                        datasets: [
+                            {{ label: 'Average APM', data: reportsData.map(r => r.average_apm), borderColor: 'rgba(75, 192, 192, 1)', tension: 0.1 }},
+                            {{ label: 'Average veAPM', data: reportsData.map(r => r.average_veapm), borderColor: 'rgba(255, 99, 132, 1)', tension: 0.1 }}
+                        ]
+                    }},
+                    options: {{ responsive: true, scales: {{ x: {{ title: {{ display: true, text: 'Report Date' }} }}, y: {{ title: {{ display: true, text: 'APM' }} }} }} }}
+                }});
+            </script>
+        </body>
+        </html>
+        """
+        with open(html_path, 'w') as f:
+            f.write(html_content)
+        return html_path
+
+
+# --- Textual TUI ---
+
+class APMDisplay(Static):
+    """A widget to display a single APM metric."""
+    value = reactive(0)
+    def __init__(self, label, icon, **kwargs):
+        super().__init__(**kwargs)
+        self.label = label
+        self.icon = icon
+    
+    def watch_value(self, value: int) -> None:
+        self.update(f"{self.icon} {self.label:<16} [b]{value:>6,}[/b]")
+
+class APMGraph(Static):
+    """A widget to display the APM trend graph."""
+    history = reactive(list)
+    MAX_BAR_HEIGHT = 8  # How many lines tall the graph is
+    def watch_history(self, history: list) -> None:
+        graph_width = self.size.width
+        if not history or graph_width <= 0:
+            self.update("")
+            return
+
+        max_apm = max(history) if history else 1
+        grid = [[' '] * graph_width for _ in range(self.MAX_BAR_HEIGHT)]
+        bar_chars = [' ', ' ', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+        graph = ""
+        for i in range(graph_width):
+            idx = int(i * len(history) / graph_width)
+            apm = history[idx]
+            
+            # Calculate bar height, including fractional parts
+            bar_height = (apm / max_apm) * self.MAX_BAR_HEIGHT if max_apm > 0 else 0
+            full_bars = int(bar_height)
+            fractional_part = bar_height - full_bars
+            
+            # Draw full bars from the bottom up
+            for y in range(full_bars):
+                grid[self.MAX_BAR_HEIGHT - 1 - y][i] = '█'
+
+            # Draw the fractional top of the bar
+            if full_bars < self.MAX_BAR_HEIGHT:
+                char_index = int(fractional_part * (len(bar_chars) -1))
+                grid[self.MAX_BAR_HEIGHT - 1 - full_bars][i] = bar_chars[char_index]
+
+        # Convert the grid to a single multi-line string
+        graph_str = "\n".join("".join(row) for row in grid)
+        self.update(graph_str)
+
+class YalapmTUI(App):
+    """The Textual TUI application for YALAPM."""
+
+    CSS = """
+    Screen {
+        background: $surface-darken-1;
+    }
+    #main_container {
+        layout: grid;
+        grid-size: 2;
+        grid-gutter: 1;
+        padding: 1;
+        border: thick $primary-lighten-2;
+        border-title-align: center;
+    }
+    APMDisplay {
+        content-align: left middle;
+        height: 3;
+        background: $surface-lighten-1;
+        padding: 0 1;
+    }
+    #session_time, #status {
+        column-span: 2;
+        content-align: center middle;
+        background: $surface;
+        padding: 0 1;
+    }
+    #controls_hint {
+        column-span: 2;
+        height: 3;
+        content-align: center middle;
+        background: $primary-darken-2;
+    }
+    #graph {
+        column-span: 2;
+        height: 12; /* Increased height for the new graph */
+        border: wide $surface-lighten-2;
+        padding: 1;
+    }
+    """
+    
+    BINDINGS = [
+        ("s", "start_resume", "Start/Resume"),
+        ("p", "pause", "Pause"),
+        ("r", "reset", "Reset Session"),
+        ("f", "open_folder", "Open Folder"),
+        ("v", "view_report", "View Report"),
+        ("q", "quit", "Quit"),
+    ]
+
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="main_container"):
+            yield APMDisplay("Current APM:", "⚡", id="current_apm")
+            yield APMDisplay("Peak APM:", "🏆", id="peak_apm")
+            yield APMDisplay("Average APM:", "📊", id="avg_apm")
+            yield APMDisplay("Average veAPM:", "🎮", id="veapm")
+            yield APMDisplay("Total Actions:", "🎯", id="total_actions")
+            yield Static("", id="session_time")
+            yield Static("", id="status")
+            yield Static("", id="controls_hint")
+            yield APMGraph(id="graph")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.set_interval(1, self.update_display)
+        self.query_one("#main_container").border_title = "YALAPM"
+        self.query_one("#graph").border_title = "APM Trend (last 5 mins)"
+    
+    def update_footer(self) -> None:
+        """Dynamically update footer actions based on state."""
+        if self.engine.state == "PAUSED":
+            self.screen.bindings["s"].key_display = "s (Resume)"
+        else:
+            self.screen.bindings["s"].key_display = "s (Start)"
+        self.refresh()
+
+    def update_display(self) -> None:
+        """Called every second to refresh the UI with new stats."""
+        stats = self.engine.get_stats()
+        self.query_one("#current_apm", APMDisplay).value = stats["current_apm"]
+        self.query_one("#peak_apm", APMDisplay).value = stats["peak_apm"]
+        self.query_one("#avg_apm", APMDisplay).value = stats["average_apm"]
+        self.query_one("#veapm", APMDisplay).value = stats["average_veapm"]
+        self.query_one("#total_actions", APMDisplay).value = stats["total_actions"]
+        self.query_one("#session_time").update(f"⏱️ Session Time:   [b]{stats['session_time']}[/b]")
+        self.query_one("#status").update(f"   Status:         [b]{stats['status']}[/b]")
+        self.query_one(APMGraph).history = stats["apm_history"]
+        hint_widget = self.query_one("#controls_hint")
+        if self.engine.state == "STOPPED":
+            hint_widget.update("💡 [b]Press 's' to START Session[/b]")
+        elif self.engine.state == "RUNNING":
+            hint_widget.update("💡 [b]Press 'p' to PAUSE Session[/b]")
+        elif self.engine.state == "PAUSED":
+            hint_widget.update("💡 [b]Press 's' to RESUME Session[/b]")
+    
+    def action_start_resume(self) -> None:
+        if self.engine.state == "STOPPED":
+            self.engine.start()
+        elif self.engine.state == "PAUSED":
+            self.engine.resume()
+
+    def action_pause(self) -> None:
+        self.engine.pause()
+
+    def action_reset(self) -> None:
+        self.engine.reset()
+        self.engine.start() # Start a new session immediately
+
+    def action_open_folder(self) -> None:
+        self.engine.open_report_folder()
+    
+    def action_view_report(self) -> None:
+        report_path = self.engine.get_report_path()
+        if report_path.exists():
+            webbrowser.open_new_tab(report_path.as_uri())
+        else:
+            self.notify("No report file exists yet. Stop a session first.", title="Info", severity="information")
+
+    def action_quit(self) -> None:
+        """Called when user presses 'q' or Ctrl+C."""
+        report_path = self.engine.stop()
+        if report_path:
+            webbrowser.open_new_tab(report_path.as_uri())
+            self.exit(f"\n✅ Report saved and opened. Location: {report_path}")
+        else:
+            self.exit("\n✅ Session finished. No data to save.")
+
+
+# --- Main Execution ---
 
 def check_permissions():
-    """Check if we can access input devices"""
+    """Briefly check if we have permissions to listen to input devices."""
     try:
-        # Try to create listeners briefly
-        mouse_test = mouse.Listener(on_click=lambda x,y,b,p: None)
-        keyboard_test = keyboard.Listener(on_press=lambda k: None)
-        
-        mouse_test.start()
-        keyboard_test.start()
+        m_test = mouse.Listener(on_click=lambda *args: None)
+        k_test = keyboard.Listener(on_press=lambda k: None)
+        m_test.start(); k_test.start()
         time.sleep(0.1)
-        
-        mouse_test.stop()
-        keyboard_test.stop()
-        
+        m_test.stop(); k_test.stop()
         return True
-    except Exception as e:
+    except Exception:
         return False
-
 
 if __name__ == "__main__":
     print("🔍 Checking system compatibility...")
-
-    # Check permissions first
     if not check_permissions():
-        print("⚠️  Permission issue detected!")
-        print("🔧 Solutions:")
-        print("   1. Run with sudo: sudo python3 apm_monitor.py")
-        print("   2. Install system package: sudo apt install python3-pynput")
-        print("   3. Add user to input group: sudo usermod -a -G input $USER")
-        print("   4. Some systems need X11 session or different setup")
-        print("\n🚀 Starting anyway (some features may not work)...")
+        print("\n⚠️  Permission issue detected!")
+        print("   This script needs permission to listen to keyboard and mouse events.")
+        print("   On Linux, you may need to run this with sudo:")
+        print("   $ sudo python3 yalapm.py\n")
+        sys.exit(1)
     else:
         print("✅ Permissions look good!")
-        
+
     try:
-        monitor = RobustAPMMonitor()
-        monitor.run_simple_ui()
+        engine = APMMonitorEngine()
+        app = YalapmTUI(engine)
+        app.run()
     except Exception as e:
-        print(f"💥 Unexpected error: {e}")
-        print("🔧 Try running with sudo or check your Python environment")
+        print(f"💥 An unexpected error occurred: {e}")
