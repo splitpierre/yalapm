@@ -541,12 +541,15 @@ def check_permissions():
         time.sleep(0.1)
         m_test.stop(); k_test.stop()
         return True
-    except Exception: return False
+    except Exception:
+        return False
 
-if __name__ == "__main__":
+
+def main():
+    """Entry point for yalapm CLI."""
     print("🔍 Checking system compatibility...")
     if not check_permissions():
-        print("\n⚠️  Permission issue detected! Please run with sudo:\n   $ sudo python3 yalapm.py\n")
+        print("\n⚠️  Permission issue detected! Please run with sudo:\n   $ sudo yalapm\n")
         sys.exit(1)
     else:
         print("✅ Permissions look good!")
@@ -554,3 +557,7 @@ if __name__ == "__main__":
     engine = APMMonitorEngine()
     app = YalapmTUI(engine)
     app.run()
+
+
+if __name__ == "__main__":
+    main()
